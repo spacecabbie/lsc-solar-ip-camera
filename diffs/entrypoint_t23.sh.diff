@@ -1,0 +1,175 @@
+--- a/entrypoint_t23.sh (upstream 3160dad T23_ENTRYPOINT, rendered --no-low-power)
++++ b/entrypoint_t23.sh
+@@ -3,8 +3,106 @@
+ LOGDIR="$SD/logs"
+ LOG="$LOGDIR/t23-entrypoint.log"
+ PATCHER="$SD/custom/bin/patch_stone_main"
++
++# ---------------------------------------------------------------------------
++# Camera feature switches (applied at boot before stone-main).
++# Pattern: empty value "" = leave /config/tuya file untouched.
++#           non-empty     = write that value (printf "%s\n").
++# Mark: [Niek] = present in Niek toolkit entrypoint; [custom] = added here.
++# Live defaults 2026-10-20 Europe/Lisbon (tracking test); HUM+TRACK forced on.
++# ---------------------------------------------------------------------------
++
++# [Niek] Patcher mode for stone-main: 1=keep Tuya low-power patches, 0=full/high-power patch.
++# NOT a battery on/off switch. There is no /config "battery enable" flag on this firmware.
++# Battery % is read-only (/config/common/adc_percent). Tracking ignores enable if ADC < 30.
+ STONE_LOW_POWER=0
+ 
++# --- Stock Tuya /config/tuya knobs (on/off and small enums) ---
++
++# [custom] Human/object PTZ tracking. File tuya_track_enable. Tuya DP 161.
++# Effect: PersonDet boxes drive pan/tilt follow. Needs human detect for useful results.
++TUYA_TRACK_ENABLE=1
++
++# [Niek] Human / person IVS detect. File tuya_hum_on_off. Tuya DP 170.
++# Effect: enables Ingenic PersonDet; feeds alarms + tracking.
++TUYA_HUM_ON_OFF=1
++
++# [custom] Motion-detect switch. File tuya_motion_switch. Tuya DP 134.
++# Empty: file often absent (fw default). Set 0/1 to force.
++TUYA_MOTION_SWITCH=
++
++# [custom] Siren on/off. File tuya_siren_onoff. Tuya DP 159.
++TUYA_SIREN_ONOFF=0
++
++# [custom] Auto-siren on alarm events. File ipc_auto_siren (under /config/tuya/). Tuya DP 234.
++# Empty: leave untouched (file usually absent).
++TUYA_IPC_AUTO_SIREN=
++
++# [custom] White/flood light. File tuya_light_onoff. Tuya DP 101.
++TUYA_LIGHT_ONOFF=1
++
++# [custom] White-light mode enum (when present). File tuya_white_light_mode. Empty=untouched.
++TUYA_WHITE_LIGHT_MODE=
++
++# [custom] Indicator / "blub" LED. File tuya_blub_on_off. Tuya DP 138. Empty=untouched.
++TUYA_BLUB_ON_OFF=
++
++# [custom] Privacy / sleep (lens park). File tuya_sleep_mode. Tuya DP 105 basic_private.
++TUYA_SLEEP_MODE=0
++
++# [Niek] PIR wake enable. File tuya_pir_on_off.
++TUYA_PIR_ON_OFF=1
++
++# [Niek] PIR sensitivity (typically 0-2). File tuya_pir_sens.
++TUYA_PIR_SENS=1
++
++# [Niek] SD event record duration knob. File tuya_record_time (may be unused by this .49 build).
++TUYA_RECORD_TIME=2
++
++# [Niek] Image flip. File tuya_flip_onoff. Tuya DP 103.
++TUYA_FLIP_ONOFF=0
++
++# [Niek] OSD watermark. File tuya_watermark_onoff. Tuya DP 104.
++TUYA_WATERMARK_ONOFF=0
++
++# [custom] Night vision mode enum. File tuya_night_mode. Live=1.
++TUYA_NIGHT_MODE=1
++
++# [custom] Alarm linkage enum 0-3. File tuya_alarm_linkage. Live=3.
++TUYA_ALARM_LINKAGE=3
++
++# [custom] Anti-flicker. File tuya_anti_flick. Live=1.
++TUYA_ANTI_FLICK=1
++
++# [custom] Live stream clarity knob. File tuya_video_live_clarity. Live=0 (may be unused).
++TUYA_VIDEO_LIVE_CLARITY=0
++
++# [custom] Motion -> SD record. File tuya_motion_sd_record. Tuya DP 239. Empty=untouched.
++TUYA_MOTION_SD_RECORD=
++
++# [custom] Human -> SD record. File tuya_human_sd_record. Tuya DP 241. Empty=untouched.
++TUYA_HUMAN_SD_RECORD=
++
++# [custom] Continuous SD record on/off. File tuya_sd_record_on_off. Tuya DP 150. Empty=untouched.
++TUYA_SD_RECORD_ON_OFF=
++
++# [custom] Speaker volume. File tuya_dev_volume. Tuya DP 160. Empty=untouched.
++TUYA_DEV_VOLUME=
++
++# [custom] Tuya low_power_value threshold file (not a battery master switch). Empty=untouched.
++# No separate "battery on/off" setting exists in stock fw or this toolkit.
++TUYA_LOW_POWER_VALUE=
++
++# --- Niek toolkit timing (not Tuya DPs) ---
++TELNET_PORT=2323
++ONVIF_PORT=8899
++AIC_FILTER_SECONDS=90
++# [Niek] ONVIF motion pulse hold when STONE_LOW_POWER=1
++LOW_POWER_MOTION_HOLD_SECONDS=30
++LOW_POWER_MOTION_REPULSE_SECONDS=10
++LOG_MAX_BYTES=262144
++LOG_PRUNE_INTERVAL_SECONDS=60
++
+ mkdir -p "$LOGDIR" >/dev/null 2>&1 || true
+ : > "$LOG" 2>/dev/null || LOG=/dev/null
+ 
+@@ -19,20 +117,6 @@
+ STOCK_STONE_MAIN=/stone/main
+ EARLY_STOCK_STONE_MAIN=/stone/.lsc-stock-main
+ STONE_RUN="$STONE_MAIN"
+-TELNET_PORT=2323
+-ONVIF_PORT=8899
+-TUYA_HUM_ON_OFF=0
+-TUYA_PIR_ON_OFF=1
+-TUYA_PIR_SENS=1
+-TUYA_RECORD_TIME=2
+-TUYA_FLIP_ONOFF=0
+-TUYA_WATERMARK_ONOFF=0
+-AIC_FILTER_SECONDS=90
+-LOW_POWER_MOTION_HOLD_SECONDS=30
+-LOW_POWER_MOTION_REPULSE_SECONDS=10
+-LOG_MAX_BYTES=262144
+-LOG_PRUNE_INTERVAL_SECONDS=60
+-
+ echo t23-entrypoint-start > /dev/console
+ log "start"
+ log "stone low power=$STONE_LOW_POWER"
+@@ -187,8 +271,12 @@
+ }
+ 
+ set_tuya_config() {
++    # [custom] empty value => do not touch existing /config/tuya/$key
+     key="$1"
+     value="$2"
++    if [ -z "$value" ]; then
++        return 0
++    fi
+     path="/config/tuya/$key"
+     current="$(cat "$path" 2>/dev/null || true)"
+     if [ "$current" = "$value" ]; then
+@@ -266,13 +354,31 @@
+ }
+ 
+ configure_tuya_motion() {
++    # Name kept for Niek call-site compatibility; now applies all declared Tuya switches.
+     mkdir -p /config/tuya 2>> "$LOG" || true
++    set_tuya_config tuya_track_enable "$TUYA_TRACK_ENABLE"
+     set_tuya_config tuya_hum_on_off "$TUYA_HUM_ON_OFF"
++    set_tuya_config tuya_motion_switch "$TUYA_MOTION_SWITCH"
++    set_tuya_config tuya_siren_onoff "$TUYA_SIREN_ONOFF"
++    set_tuya_config ipc_auto_siren "$TUYA_IPC_AUTO_SIREN"
++    set_tuya_config tuya_light_onoff "$TUYA_LIGHT_ONOFF"
++    set_tuya_config tuya_white_light_mode "$TUYA_WHITE_LIGHT_MODE"
++    set_tuya_config tuya_blub_on_off "$TUYA_BLUB_ON_OFF"
++    set_tuya_config tuya_sleep_mode "$TUYA_SLEEP_MODE"
+     set_tuya_config tuya_pir_on_off "$TUYA_PIR_ON_OFF"
+     set_tuya_config tuya_pir_sens "$TUYA_PIR_SENS"
+     set_tuya_config tuya_record_time "$TUYA_RECORD_TIME"
+     set_tuya_config tuya_flip_onoff "$TUYA_FLIP_ONOFF"
+     set_tuya_config tuya_watermark_onoff "$TUYA_WATERMARK_ONOFF"
++    set_tuya_config tuya_night_mode "$TUYA_NIGHT_MODE"
++    set_tuya_config tuya_alarm_linkage "$TUYA_ALARM_LINKAGE"
++    set_tuya_config tuya_anti_flick "$TUYA_ANTI_FLICK"
++    set_tuya_config tuya_video_live_clarity "$TUYA_VIDEO_LIVE_CLARITY"
++    set_tuya_config tuya_motion_sd_record "$TUYA_MOTION_SD_RECORD"
++    set_tuya_config tuya_human_sd_record "$TUYA_HUMAN_SD_RECORD"
++    set_tuya_config tuya_sd_record_on_off "$TUYA_SD_RECORD_ON_OFF"
++    set_tuya_config tuya_dev_volume "$TUYA_DEV_VOLUME"
++    set_tuya_config low_power_value "$TUYA_LOW_POWER_VALUE"
+     sync
+ }
+ 
