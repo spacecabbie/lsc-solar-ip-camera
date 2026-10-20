@@ -85,6 +85,12 @@ docker "${run_args[@]}" "$IMAGE" sh -eu -c '
     -o build/mipsel/bin/patch_stone_main \
     tools/src/patch_stone_main.c
 
+  mipsel-linux-gnu-gcc \
+    -mips32r2 -mabi=32 -static -Os -s \
+    -Wall -Wextra -Werror \
+    -o build/mipsel/bin/ms32008v2 \
+    tools/src/ms32008v2.c
+
   onvif_src=build/third_party/onvif_simple_server
   onvif_build=build/mipsel/onvif_simple_server
   rm -rf "$onvif_build"
@@ -130,6 +136,7 @@ docker "${run_args[@]}" "$IMAGE" sh -eu -c '
   file build/mipsel/bin/stone_dump_relay
   file build/mipsel/bin/onvif_cgi_httpd
   file build/mipsel/bin/patch_stone_main
+  file build/mipsel/bin/ms32008v2
   file build/mipsel/bin/onvif_simple_server
   file build/mipsel/bin/onvif_notify_server
   file build/mipsel/bin/wsd_simple_server
