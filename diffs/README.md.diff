@@ -1,0 +1,52 @@
+diff --git a/README.md b/README.md
+index 089d45b..14761e6 100644
+--- a/README.md
++++ b/README.md
+@@ -222,6 +222,39 @@ Default ONVIF credentials:
+ admin / admin
+ ```
+ 
++## PTZ (solar PTZ model 3218152)
++
++The solar PTZ model drives its pan/tilt steppers with an MS32008 motor chip on
++`/dev/i2c-1` (address `0x10`). `tools/src/ms32008v2.c` replays the stock
++start/stop register bursts and reads the step counter; `tools/ptz/ptz2.sh`
++maps ONVIF PTZ hooks onto it. Build the payload with `--ptz` to enable it:
++
++```sh
++./tools/build_tuya_dat_overflow.py --no-trigger --ptz /tmp/lsc-solar-payload
++```
++
++This sets `ptz=1` plus the `move_*`, `jump_to_*`, preset and home hooks in
++`custom/onvif/onvif_simple_server.conf`, and installs `custom/bin/ms32008v2`
++and `custom/scripts/ptz2.sh`. Supported ONVIF operations:
++
++| Operation | Units |
++| --- | --- |
++| ContinuousMove / Stop | velocity `-1..1`; runs to the soft limit until Stop |
++| RelativeMove | TranslationGenericSpace `-1..1` = fraction of full travel (x>0 right, y>0 up) |
++| AbsoluteMove, GetStatus | PositionGenericSpace `0..1` (0 = left / bottom stop) |
++| GetPresets, SetPreset, GotoPreset, RemovePreset | `PresetToken_1`..`PresetToken_7` |
++| SetHomePosition, GotoHomePosition | default home is the centre |
++
++Zoom is not available (no zoom hardware). The camera has no end-stop
++sensors, so position is tracked in `custom/ptz_pos`. Preset 8 (`Calibrate`)
++is reserved: it gently bumps into the left and bottom stops, zeroes the
++position and returns home. Run it once after first install or if the
++position drifts. Emergency stop from telnet:
++`/tmp/mnt/sdcard/custom/bin/ms32008v2 --go stop`.
++
++To undo, rebuild the payload without `--ptz` (or set `ptz=0` in
++`custom/onvif/onvif_simple_server.conf`) and restart.
++
+ ## Live update over the network
+ 
+ After telnet is working, you can update the SD-card files without physically
+@@ -295,6 +328,7 @@ tools/fetch_tuya_ota.py               Smart Life login and OTA downloader
+ tools/wake_tuya_camera.py             Smart Life wake and preview keep-awake helper
+ tools/push_camera_live.py             live network updater
+ tools/compile.sh                      Docker based MIPS build
++tools/ptz/ptz2.sh                     ONVIF PTZ hooks for the solar PTZ model
+ tools/src/                            small camera-side helpers
+ tools/patches/                        ONVIF server portability patch
+ ```

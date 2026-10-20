@@ -1,0 +1,106 @@
+diff --git a/tools/build_tuya_dat_overflow.py b/tools/build_tuya_dat_overflow.py
+index 4b9548d..b61aa53 100755
+--- a/tools/build_tuya_dat_overflow.py
++++ b/tools/build_tuya_dat_overflow.py
+@@ -567,6 +567,31 @@ done
+ """
+ 
+ 
++PTZ_CONFIG = """ptz=1
++min_step_x=0
++max_step_x=1
++min_step_y=0
++max_step_y=1
++min_step_z=0
++max_step_z=0
++move_left=/tmp/mnt/sdcard/custom/scripts/ptz2.sh left %f
++move_right=/tmp/mnt/sdcard/custom/scripts/ptz2.sh right %f
++move_up=/tmp/mnt/sdcard/custom/scripts/ptz2.sh up %f
++move_down=/tmp/mnt/sdcard/custom/scripts/ptz2.sh down %f
++move_stop=/tmp/mnt/sdcard/custom/scripts/ptz2.sh stop
++jump_to_rel=/tmp/mnt/sdcard/custom/scripts/ptz2.sh rel %f %f %f
++jump_to_abs=/tmp/mnt/sdcard/custom/scripts/ptz2.sh abs %f %f %f
++get_position=/tmp/mnt/sdcard/custom/scripts/ptz2.sh getpos
++is_moving=/tmp/mnt/sdcard/custom/scripts/ptz2.sh moving
++get_presets=/tmp/mnt/sdcard/custom/scripts/ptz2.sh presets
++move_preset=/tmp/mnt/sdcard/custom/scripts/ptz2.sh preset %d
++set_preset=/tmp/mnt/sdcard/custom/scripts/ptz2.sh setpreset %d %s
++remove_preset=/tmp/mnt/sdcard/custom/scripts/ptz2.sh rmpreset %d
++set_home_position=/tmp/mnt/sdcard/custom/scripts/ptz2.sh sethome
++goto_home_position=/tmp/mnt/sdcard/custom/scripts/ptz2.sh gohome
++"""
++
++
+ ONVIF_CONFIG = """model=LSC Outdoor Camera
+ manufacturer=LSC
+ firmware_ver=LSC-T23-stock-plus-local
+@@ -761,7 +786,20 @@ def copy_patch_helper(mount: Path) -> None:
+     chmod_exec(dst)
+ 
+ 
+-def copy_onvif_files(mount: Path) -> None:
++def copy_ptz_files(mount: Path) -> None:
++    root = Path(__file__).resolve().parents[1]
++    src = root / "build" / "mipsel" / "bin" / "ms32008v2"
++    if not src.is_file():
++        raise SystemExit(f"missing {src}; run ./tools/compile.sh first")
++    dst = mount / "custom" / "bin" / "ms32008v2"
++    shutil.copy2(src, dst)
++    chmod_exec(dst)
++    script = mount / "custom" / "scripts" / "ptz2.sh"
++    shutil.copy2(root / "tools" / "ptz" / "ptz2.sh", script)
++    chmod_exec(script)
++
++
++def copy_onvif_files(mount: Path, *, ptz: bool = False) -> None:
+     root = Path(__file__).resolve().parents[1]
+     bin_dir = root / "build" / "mipsel" / "bin"
+     onvif_src = root / "build" / "third_party" / "onvif_simple_server"
+@@ -792,7 +830,8 @@ def copy_onvif_files(mount: Path) -> None:
+ 
+     dst_root = mount / "custom" / "onvif"
+     dst_root.mkdir(parents=True, exist_ok=True)
+-    (dst_root / "onvif_simple_server.conf").write_text(ONVIF_CONFIG, encoding="ascii")
++    config = ONVIF_CONFIG.replace("ptz=0\n", PTZ_CONFIG) if ptz else ONVIF_CONFIG
++    (dst_root / "onvif_simple_server.conf").write_text(config, encoding="ascii")
+ 
+     for name in asset_dirs:
+         src = onvif_src / name
+@@ -823,7 +862,7 @@ def script_with_options(script: str, *, stone_low_power: bool) -> str:
+     return script.replace("__STONE_LOW_POWER__", "1" if stone_low_power else "0")
+ 
+ 
+-def write_mount(mount: Path, payload: bytes | None, *, stone_low_power: bool) -> None:
++def write_mount(mount: Path, payload: bytes | None, *, stone_low_power: bool, ptz: bool = False) -> None:
+     if not mount.is_dir():
+         raise SystemExit(f"mountpoint is not a directory: {mount}")
+ 
+@@ -853,7 +892,9 @@ def write_mount(mount: Path, payload: bytes | None, *, stone_low_power: bool) ->
+     copy_aic_filter(mount)
+     copy_stream_relay(mount)
+     copy_patch_helper(mount)
+-    copy_onvif_files(mount)
++    copy_onvif_files(mount, ptz=ptz)
++    if ptz:
++        copy_ptz_files(mount)
+ 
+ 
+ def main() -> int:
+@@ -880,6 +921,8 @@ def main() -> int:
+         action="store_true",
+         help="build an update-only payload and ensure tuya.dat is absent",
+     )
++    parser.add_argument("--ptz", action="store_true",
++                        help="enable ONVIF PTZ for the solar PTZ model (3218152, MS32008 motor driver)")
+     parser.add_argument("mountpoint", nargs="?", help="SD card mountpoint to write")
+     args = parser.parse_args()
+ 
+@@ -897,7 +940,7 @@ def main() -> int:
+         parser.error("provide a mountpoint")
+ 
+     mount = Path(args.mountpoint)
+-    write_mount(mount, payload, stone_low_power=args.stone_low_power)
++    write_mount(mount, payload, stone_low_power=args.stone_low_power, ptz=args.ptz)
+ 
+     if payload is None:
+         print(f"no trigger: ensured {mount / 'tuya.dat'} is absent")
