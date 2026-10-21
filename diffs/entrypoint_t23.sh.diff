@@ -1,0 +1,53 @@
+--- orig.sh	2026-10-21 03:49:07.553608294 +0100
++++ files/custom/scripts/entrypoint_t23.sh	2026-10-21 03:49:07.565608294 +0100
+@@ -294,6 +294,33 @@
+     fi
+ }
+ 
++ensure_sd_stone_mode() {
++    sd_mode="$(cat "$STONE_PATCH_MODE" 2>/dev/null || true)"
++    rm -f "$STONE_MAIN_TMP"
++    if cp "$STONE_MAIN" "$STONE_MAIN_TMP" 2>> "$LOG" &&
++       patch_stone "$STONE_MAIN_TMP" >> "$LOG" 2>&1; then
++        chmod 755 "$STONE_MAIN_TMP" 2>> "$LOG" || true
++        if cmp -s "$STONE_MAIN_TMP" "$STONE_MAIN"; then
++            rm -f "$STONE_MAIN_TMP"
++        elif mv -f "$STONE_MAIN_TMP" "$STONE_MAIN" 2>> "$LOG"; then
++            log "re-patched SD Tuya executable to low power=$STONE_LOW_POWER (was mode=$sd_mode)"
++        else
++            rm -f "$STONE_MAIN_TMP"
++            log "WARNING: could not replace SD Tuya executable; low power mode may be wrong"
++            return 0
++        fi
++        if [ "$sd_mode" != "$STONE_LOW_POWER" ]; then
++            printf "%s\n" "$STONE_LOW_POWER" > "$STONE_PATCH_MODE" 2>> "$LOG" || true
++        fi
++        sync
++        log "SD Tuya executable verified at low power=$STONE_LOW_POWER"
++    else
++        rm -f "$STONE_MAIN_TMP"
++        log "WARNING: SD Tuya executable failed patch/validation for low power=$STONE_LOW_POWER (mode=$sd_mode)"
++    fi
++    return 0
++}
++
+ prepare_stone_main() {
+     stock_source="$STOCK_STONE_MAIN"
+     if [ ! -x "$stock_source" ] && [ -x "$EARLY_STOCK_STONE_MAIN" ]; then
+@@ -304,8 +331,14 @@
+     if [ ! -x "$stock_source" ]; then
+         STONE_RUN="$STONE_MAIN"
+         log "stock Tuya executable not found; using SD copy"
+-        [ -x "$STONE_MAIN" ]
+-        return
++        [ -x "$STONE_MAIN" ] || return 1
++        # [custom] Even without a stock binary, the SD copy must match the
++        # requested low-power mode (e.g. after a tuya.dat re-arm rebuilt it
++        # with low-power kept). The patcher rewrites the low-power word in
++        # place on an already-patched binary; work on a temp copy so a failed
++        # patch never leaves a half-written executable.
++        ensure_sd_stone_mode
++        return 0
+     fi
+ 
+     # Prefer the current stock binary until a compatible SD copy has been

@@ -1,0 +1,515 @@
+#!/bin/sh
+SD=/tmp/mnt/sdcard
+LOGDIR="$SD/logs"
+LOG="$LOGDIR/t23-entrypoint.log"
+PATCHER="$SD/custom/bin/patch_stone_main"
+
+# ---------------------------------------------------------------------------
+# Camera feature switches (applied at boot before stone-main).
+# Pattern: empty value "" = leave /config/tuya file untouched.
+#           non-empty     = write that value (printf "%s\n").
+# Mark: [Niek] = present in Niek toolkit entrypoint; [custom] = added here.
+# Live defaults 2026-10-20 Europe/Lisbon (tracking test); HUM+TRACK forced on.
+# Detail: dumps/ptz-3218152-6.2163.49-20261019/79-feature-flags.md
+# ---------------------------------------------------------------------------
+
+# [Niek] Patcher mode for stone-main: 1=keep Tuya low-power patches, 0=full/high-power patch.
+# NOT a battery on/off switch. There is no /config "battery enable" flag on this firmware.
+# Battery % is read-only (/config/common/adc_percent). Tracking ignores enable if ADC < 30.
+STONE_LOW_POWER=0
+
+# --- Stock Tuya /config/tuya knobs (on/off and small enums) ---
+
+# [custom] Human/object PTZ tracking. File tuya_track_enable. Tuya DP 161.
+# Effect: PersonDet boxes drive pan/tilt follow. Needs human detect for useful results.
+TUYA_TRACK_ENABLE=1
+
+# [Niek] Human / person IVS detect. File tuya_hum_on_off. Tuya DP 170.
+# Effect: enables Ingenic PersonDet; feeds alarms + tracking.
+TUYA_HUM_ON_OFF=1
+
+# [custom] Motion-detect switch. File tuya_motion_switch. Tuya DP 134.
+# Empty: file often absent (fw default). Set 0/1 to force.
+TUYA_MOTION_SWITCH=
+
+# [custom] Siren on/off. File tuya_siren_onoff. Tuya DP 159.
+TUYA_SIREN_ONOFF=0
+
+# [custom] Auto-siren on alarm events. File ipc_auto_siren (under /config/tuya/). Tuya DP 234.
+# Empty: leave untouched (file usually absent).
+TUYA_IPC_AUTO_SIREN=
+
+# [custom] White/flood light. File tuya_light_onoff. Tuya DP 101.
+TUYA_LIGHT_ONOFF=1
+
+# [custom] White-light mode enum (when present). File tuya_white_light_mode. Empty=untouched.
+TUYA_WHITE_LIGHT_MODE=
+
+# [custom] Indicator / "blub" LED. File tuya_blub_on_off. Tuya DP 138. Empty=untouched.
+TUYA_BLUB_ON_OFF=
+
+# [custom] Privacy / sleep (lens park). File tuya_sleep_mode. Tuya DP 105 basic_private.
+TUYA_SLEEP_MODE=0
+
+# [Niek] PIR wake enable. File tuya_pir_on_off.
+TUYA_PIR_ON_OFF=1
+
+# [Niek] PIR sensitivity (typically 0-2). File tuya_pir_sens.
+TUYA_PIR_SENS=1
+
+# [Niek] SD event record duration knob. File tuya_record_time (may be unused by this .49 build).
+TUYA_RECORD_TIME=2
+
+# [Niek] Image flip. File tuya_flip_onoff. Tuya DP 103.
+TUYA_FLIP_ONOFF=0
+
+# [Niek] OSD watermark. File tuya_watermark_onoff. Tuya DP 104.
+TUYA_WATERMARK_ONOFF=0
+
+# [custom] Night vision mode enum. File tuya_night_mode. Live=1.
+TUYA_NIGHT_MODE=1
+
+# [custom] Alarm linkage enum 0-3. File tuya_alarm_linkage. Live=3.
+TUYA_ALARM_LINKAGE=3
+
+# [custom] Anti-flicker. File tuya_anti_flick. Live=1.
+TUYA_ANTI_FLICK=1
+
+# [custom] Live stream clarity knob. File tuya_video_live_clarity. Live=0 (may be unused).
+TUYA_VIDEO_LIVE_CLARITY=0
+
+# [custom] Motion -> SD record. File tuya_motion_sd_record. Tuya DP 239. Empty=untouched.
+TUYA_MOTION_SD_RECORD=
+
+# [custom] Human -> SD record. File tuya_human_sd_record. Tuya DP 241. Empty=untouched.
+TUYA_HUMAN_SD_RECORD=
+
+# [custom] Continuous SD record on/off. File tuya_sd_record_on_off. Tuya DP 150. Empty=untouched.
+TUYA_SD_RECORD_ON_OFF=
+
+# [custom] Speaker volume. File tuya_dev_volume. Tuya DP 160. Empty=untouched.
+TUYA_DEV_VOLUME=
+
+# [custom] Tuya low_power_value threshold file (not a battery master switch). Empty=untouched.
+# No separate "battery on/off" setting exists in stock fw or this toolkit.
+TUYA_LOW_POWER_VALUE=
+
+# --- Niek toolkit timing (not Tuya DPs) ---
+TELNET_PORT=2323
+ONVIF_PORT=8899
+AIC_FILTER_SECONDS=90
+# [Niek] ONVIF motion pulse hold when STONE_LOW_POWER=1
+LOW_POWER_MOTION_HOLD_SECONDS=30
+LOW_POWER_MOTION_REPULSE_SECONDS=10
+LOG_MAX_BYTES=262144
+LOG_PRUNE_INTERVAL_SECONDS=60
+
+mkdir -p "$LOGDIR" >/dev/null 2>&1 || true
+: > "$LOG" 2>/dev/null || LOG=/dev/null
+
+log() {
+    echo "[$(date +%Y-%m-%dT%H:%M:%S)] $*" >> "$LOG"
+}
+
+STONE_MAIN="$SD/factory/stone-main.bin"
+STONE_MAIN_TMP="$STONE_MAIN.tmp"
+STONE_SOURCE_MD5="$STONE_MAIN.source.md5"
+STONE_PATCH_MODE="$STONE_MAIN.mode"
+STOCK_STONE_MAIN=/stone/main
+EARLY_STOCK_STONE_MAIN=/stone/.lsc-stock-main
+STONE_RUN="$STONE_MAIN"
+echo t23-entrypoint-start > /dev/console
+log "start"
+log "stone low power=$STONE_LOW_POWER"
+for run_log in stone-main.log telnetd.log aic_filter.log stream_relay.log onvif_httpd.log wsd_simple_server.log onvif_simple_server.log onvif_notify_server.log video_motion.log pir_motion.log; do
+    : > "$LOGDIR/$run_log" 2>/dev/null || true
+done
+log "reset per-run logs"
+
+prune_runtime_logs() {
+    for run_log in "$LOGDIR"/*.log "$SD/factory/main.log"; do
+        [ -f "$run_log" ] || continue
+        size="$(stat -c %s "$run_log" 2>/dev/null || echo 0)"
+        case "$size" in
+            ""|*[!0-9]*) size=0 ;;
+        esac
+        if [ "$size" -gt "$LOG_MAX_BYTES" ]; then
+            : > "$run_log" 2>/dev/null || continue
+            log "pruned ${run_log##*/} at $size bytes"
+        fi
+    done
+}
+
+start_log_pruner() {
+    (
+        while true; do
+            sleep "$LOG_PRUNE_INTERVAL_SECONDS"
+            prune_runtime_logs
+        done
+    ) &
+    log "started log pruner pid=$! max=$LOG_MAX_BYTES interval=$LOG_PRUNE_INTERVAL_SECONDS"
+}
+
+prune_runtime_logs
+
+touch /config/fmode 2>> "$LOG" || true
+sync
+log "asserted /config/fmode"
+
+start_telnetd() {
+    mkdir -p /dev/pts 2>> "$LOGDIR/telnetd.log" || true
+    mount | grep 'on /dev/pts ' >/dev/null 2>&1 || mount -t devpts devpts /dev/pts 2>> "$LOGDIR/telnetd.log" || true
+    log "starting telnetd port=$TELNET_PORT"
+    echo "telnetd-start-$TELNET_PORT" > /dev/console
+    /sbin/telnetd -p "$TELNET_PORT" -l /bin/sh >> "$LOGDIR/telnetd.log" 2>&1 &
+    log "started telnetd pid=$!"
+}
+
+start_aic_forward() {
+    (
+        helper="$SD/custom/bin/aic_filter"
+        if [ ! -x "$helper" ]; then
+            log "missing AIC filter helper: $helper"
+            exit 0
+        fi
+
+        i=0
+        while [ "$i" -lt "$AIC_FILTER_SECONDS" ]; do
+            {
+                echo "===== aic-filter round $i $(date +%Y-%m-%dT%H:%M:%S) ====="
+                "$helper"
+            } >> "$LOGDIR/aic_filter.log" 2>&1 || true
+            i=$((i + 1))
+            sleep 1
+        done
+        log "finished AIC TCP forward setup"
+    ) &
+    log "started AIC TCP forward pid=$!"
+}
+
+start_stream_relay() {
+    helper="$SD/custom/bin/stone_dump_relay"
+    if [ ! -x "$helper" ]; then
+        log "missing stream relay helper: $helper"
+        return
+    fi
+
+    if [ "$STONE_LOW_POWER" = "1" ]; then
+        motion_bytes=0
+    else
+        motion_bytes=1
+    fi
+
+    log "starting stream relay byte_motion=$motion_bytes"
+    echo stream-relay-start > /dev/console
+    STONE_MOTION_BYTES="$motion_bytes" "$helper" >> "$LOGDIR/stream_relay.log" 2>&1 &
+    log "started stream relay pid=$!"
+}
+
+start_onvif() {
+    httpd="$SD/custom/bin/onvif_cgi_httpd"
+    wsd="$SD/custom/bin/wsd_simple_server"
+    notify="$SD/custom/bin/onvif_notify_server"
+    onvif_root="$SD/custom/onvif"
+    notify_dir="/tmp/onvif_notify_server"
+
+    if [ ! -x "$httpd" ]; then
+        log "missing ONVIF HTTP helper: $httpd"
+        return
+    fi
+    if [ ! -x "$SD/custom/bin/onvif_simple_server" ]; then
+        log "missing ONVIF CGI helper: $SD/custom/bin/onvif_simple_server"
+        return
+    fi
+    if [ ! -f "$onvif_root/onvif_simple_server.conf" ]; then
+        log "missing ONVIF config: $onvif_root/onvif_simple_server.conf"
+        return
+    fi
+
+    mkdir -p "$notify_dir" 2>> "$LOGDIR/onvif_notify_server.log" || true
+    rm -f "$notify_dir/motion_alarm" 2>> "$LOGDIR/onvif_notify_server.log" || true
+    if [ -x "$notify" ] && [ -d "$onvif_root/notify_files" ]; then
+        log "starting ONVIF notify server"
+        "$notify" -c "$onvif_root/onvif_simple_server.conf"             -t "$onvif_root/notify_files" -p /tmp/onvif_notify_server.pid -f             >> "$LOGDIR/onvif_notify_server.log" 2>&1 &
+        log "started ONVIF notify server pid=$!"
+    else
+        log "missing ONVIF notify helper or templates"
+    fi
+
+    log "starting ONVIF HTTP port=$ONVIF_PORT"
+    echo onvif-http-start > /dev/console
+    "$httpd" >> "$LOGDIR/onvif_httpd.log" 2>&1 &
+    log "started ONVIF HTTP pid=$!"
+
+    if [ -x "$wsd" ] && [ -d "$onvif_root/wsd_files" ]; then
+        (
+            i=0
+            while [ "$i" -lt 45 ]; do
+                if ps | grep wsd_simple_server | grep -v grep >/dev/null 2>&1; then
+                    log "ONVIF WS-Discovery already running"
+                    exit 0
+                fi
+
+                log "starting ONVIF WS-Discovery attempt=$i"
+                "$wsd" -i wlan0 -x "http://%s:$ONVIF_PORT/onvif/device_service"                     -m "LSC%20Outdoor%20Camera" -n "LSC"                     -p /tmp/wsd_simple_server.pid -t "$onvif_root/wsd_files" -f                     >> "$LOGDIR/wsd_simple_server.log" 2>&1 &
+                pid=$!
+                sleep 3
+                if kill -0 "$pid" 2>/dev/null; then
+                    log "started ONVIF WS-Discovery pid=$pid attempt=$i"
+                    exit 0
+                fi
+
+                log "ONVIF WS-Discovery exited attempt=$i"
+                i=$((i + 1))
+                sleep 2
+            done
+            log "ONVIF WS-Discovery failed after retries"
+        ) &
+        log "started ONVIF WS-Discovery retry pid=$!"
+    else
+        log "missing ONVIF WS-Discovery helper or templates"
+    fi
+}
+
+set_tuya_config() {
+    # [custom] empty value => do not touch existing /config/tuya/$key
+    key="$1"
+    value="$2"
+    if [ -z "$value" ]; then
+        return 0
+    fi
+    path="/config/tuya/$key"
+    current="$(cat "$path" 2>/dev/null || true)"
+    if [ "$current" = "$value" ]; then
+        return
+    fi
+    printf "%s\n" "$value" > "$path" 2>> "$LOG" && log "set $key=$value"
+}
+
+patch_stone() {
+    if [ "$STONE_LOW_POWER" = "1" ]; then
+        "$PATCHER" --keep-low-power "$@"
+    else
+        "$PATCHER" "$@"
+    fi
+}
+
+ensure_sd_stone_mode() {
+    sd_mode="$(cat "$STONE_PATCH_MODE" 2>/dev/null || true)"
+    rm -f "$STONE_MAIN_TMP"
+    if cp "$STONE_MAIN" "$STONE_MAIN_TMP" 2>> "$LOG" &&
+       patch_stone "$STONE_MAIN_TMP" >> "$LOG" 2>&1; then
+        chmod 755 "$STONE_MAIN_TMP" 2>> "$LOG" || true
+        if cmp -s "$STONE_MAIN_TMP" "$STONE_MAIN"; then
+            rm -f "$STONE_MAIN_TMP"
+        elif mv -f "$STONE_MAIN_TMP" "$STONE_MAIN" 2>> "$LOG"; then
+            log "re-patched SD Tuya executable to low power=$STONE_LOW_POWER (was mode=$sd_mode)"
+        else
+            rm -f "$STONE_MAIN_TMP"
+            log "WARNING: could not replace SD Tuya executable; low power mode may be wrong"
+            return 0
+        fi
+        if [ "$sd_mode" != "$STONE_LOW_POWER" ]; then
+            printf "%s\n" "$STONE_LOW_POWER" > "$STONE_PATCH_MODE" 2>> "$LOG" || true
+        fi
+        sync
+        log "SD Tuya executable verified at low power=$STONE_LOW_POWER"
+    else
+        rm -f "$STONE_MAIN_TMP"
+        log "WARNING: SD Tuya executable failed patch/validation for low power=$STONE_LOW_POWER (mode=$sd_mode)"
+    fi
+    return 0
+}
+
+prepare_stone_main() {
+    stock_source="$STOCK_STONE_MAIN"
+    if [ ! -x "$stock_source" ] && [ -x "$EARLY_STOCK_STONE_MAIN" ]; then
+        stock_source="$EARLY_STOCK_STONE_MAIN"
+        log "using early-linked stock Tuya executable at $stock_source"
+    fi
+
+    if [ ! -x "$stock_source" ]; then
+        STONE_RUN="$STONE_MAIN"
+        log "stock Tuya executable not found; using SD copy"
+        [ -x "$STONE_MAIN" ] || return 1
+        # [custom] Even without a stock binary, the SD copy must match the
+        # requested low-power mode (e.g. after a tuya.dat re-arm rebuilt it
+        # with low-power kept). The patcher rewrites the low-power word in
+        # place on an already-patched binary; work on a temp copy so a failed
+        # patch never leaves a half-written executable.
+        ensure_sd_stone_mode
+        return 0
+    fi
+
+    # Prefer the current stock binary until a compatible SD copy has been
+    # positively selected. A failed refresh must never launch a stale copy.
+    STONE_RUN="$stock_source"
+    stock_md5="$(md5sum "$stock_source" 2>> "$LOG")"
+    stock_md5="${stock_md5%% *}"
+    saved_md5="$(cat "$STONE_SOURCE_MD5" 2>/dev/null || true)"
+    saved_mode="$(cat "$STONE_PATCH_MODE" 2>/dev/null || true)"
+    if [ -n "$stock_md5" ] && [ "$stock_md5" = "$saved_md5" ] &&
+       [ "$saved_mode" = "$STONE_LOW_POWER" ] && [ -x "$STONE_MAIN" ]; then
+        if patch_stone "$STONE_MAIN" >> "$LOG" 2>&1; then
+            STONE_RUN="$STONE_MAIN"
+            log "reusing patched Tuya executable for stock md5=$stock_md5"
+            return 0
+        fi
+        log "saved Tuya executable failed validation; rebuilding from stock"
+    elif [ -n "$stock_md5" ]; then
+        log "refreshing Tuya executable stock=$saved_md5/$stock_md5 mode=$saved_mode/$STONE_LOW_POWER"
+    else
+        log "could not calculate stock Tuya executable md5; validating a fresh copy"
+    fi
+
+    rm -f "$STONE_MAIN_TMP"
+    if cp "$stock_source" "$STONE_MAIN_TMP" 2>> "$LOG" &&
+       patch_stone "$STONE_MAIN_TMP" >> "$LOG" 2>&1; then
+        chmod 755 "$STONE_MAIN_TMP" 2>> "$LOG" || true
+        if mv -f "$STONE_MAIN_TMP" "$STONE_MAIN" 2>> "$LOG"; then
+            if [ -n "$stock_md5" ]; then
+                printf "%s
+" "$stock_md5" > "$STONE_SOURCE_MD5" 2>> "$LOG" || true
+            fi
+            printf "%s
+" "$STONE_LOW_POWER" > "$STONE_PATCH_MODE" 2>> "$LOG" || true
+            sync
+            STONE_RUN="$STONE_MAIN"
+            log "installed patched Tuya executable from current stock firmware"
+            return 0
+        fi
+        log "could not install patched Tuya executable; keeping current stock executable"
+    fi
+
+    rm -f "$STONE_MAIN_TMP"
+    log "using current stock Tuya executable unmodified"
+    log "local shell and RTSP relay still launch; stream and ONVIF snapshot availability may vary"
+    return 0
+}
+
+configure_tuya_motion() {
+    # Name kept for Niek call-site compatibility; now applies all declared Tuya switches.
+    mkdir -p /config/tuya 2>> "$LOG" || true
+    set_tuya_config tuya_track_enable "$TUYA_TRACK_ENABLE"
+    set_tuya_config tuya_hum_on_off "$TUYA_HUM_ON_OFF"
+    set_tuya_config tuya_motion_switch "$TUYA_MOTION_SWITCH"
+    set_tuya_config tuya_siren_onoff "$TUYA_SIREN_ONOFF"
+    set_tuya_config ipc_auto_siren "$TUYA_IPC_AUTO_SIREN"
+    set_tuya_config tuya_light_onoff "$TUYA_LIGHT_ONOFF"
+    set_tuya_config tuya_white_light_mode "$TUYA_WHITE_LIGHT_MODE"
+    set_tuya_config tuya_blub_on_off "$TUYA_BLUB_ON_OFF"
+    set_tuya_config tuya_sleep_mode "$TUYA_SLEEP_MODE"
+    set_tuya_config tuya_pir_on_off "$TUYA_PIR_ON_OFF"
+    set_tuya_config tuya_pir_sens "$TUYA_PIR_SENS"
+    set_tuya_config tuya_record_time "$TUYA_RECORD_TIME"
+    set_tuya_config tuya_flip_onoff "$TUYA_FLIP_ONOFF"
+    set_tuya_config tuya_watermark_onoff "$TUYA_WATERMARK_ONOFF"
+    set_tuya_config tuya_night_mode "$TUYA_NIGHT_MODE"
+    set_tuya_config tuya_alarm_linkage "$TUYA_ALARM_LINKAGE"
+    set_tuya_config tuya_anti_flick "$TUYA_ANTI_FLICK"
+    set_tuya_config tuya_video_live_clarity "$TUYA_VIDEO_LIVE_CLARITY"
+    set_tuya_config tuya_motion_sd_record "$TUYA_MOTION_SD_RECORD"
+    set_tuya_config tuya_human_sd_record "$TUYA_HUMAN_SD_RECORD"
+    set_tuya_config tuya_sd_record_on_off "$TUYA_SD_RECORD_ON_OFF"
+    set_tuya_config tuya_dev_volume "$TUYA_DEV_VOLUME"
+    set_tuya_config low_power_value "$TUYA_LOW_POWER_VALUE"
+    sync
+}
+
+start_pir_motion_watcher() {
+    if [ "$STONE_LOW_POWER" != "1" ]; then
+        log "PIR log motion watcher disabled"
+        return
+    fi
+
+    (
+        notify_dir="/tmp/onvif_notify_server"
+        motion_file="$notify_dir/motion_alarm"
+        src="$LOGDIR/stone-main.log"
+        out="$LOGDIR/pir_motion.log"
+        seen=0
+        motion_until=0
+        repulse_at=0
+
+        mkdir -p "$notify_dir" >/dev/null 2>&1 || true
+        echo "[$(date +%Y-%m-%dT%H:%M:%S)] watcher start hold=$LOW_POWER_MOTION_HOLD_SECONDS" >> "$out"
+        while true; do
+            now="$(date +%s 2>/dev/null || echo 0)"
+            if [ "$motion_until" -gt 0 ] && [ "$now" -ge "$motion_until" ]; then
+                rm -f "$motion_file" 2>/dev/null || true
+                motion_until=0
+                repulse_at=0
+                echo "[$(date +%Y-%m-%dT%H:%M:%S)] motion-off" >> "$out"
+            fi
+            if [ "$repulse_at" -gt 0 ] && [ "$now" -ge "$repulse_at" ] && [ "$motion_until" -gt "$now" ] && [ -f "$motion_file" ]; then
+                rm -f "$motion_file" 2>/dev/null || true
+                sleep 1
+                : > "$motion_file" 2>/dev/null || true
+                repulse_at=$((now + LOW_POWER_MOTION_REPULSE_SECONDS))
+                echo "[$(date +%Y-%m-%dT%H:%M:%S)] motion-repulse" >> "$out"
+            fi
+
+            if [ -f "$src" ]; then
+                n=0
+                while IFS= read -r line; do
+                    n=$((n + 1))
+                    [ "$n" -le "$seen" ] && continue
+                    case "$line" in
+                        *">pir evt<"*|*"pir:1("*)
+                            ;;
+                        *"event="*)
+                            event="${line#*event=}"
+                            event="${event%%[!0-9]*}"
+                            [ -n "$event" ] && [ "$((event & 2))" -ne 0 ] || continue
+                            ;;
+                        *)
+                            continue
+                            ;;
+                    esac
+
+                    now="$(date +%s 2>/dev/null || echo 0)"
+                    if [ "$motion_until" -le "$now" ] || [ ! -f "$motion_file" ]; then
+                        : > "$motion_file" 2>/dev/null || true
+                        repulse_at=$((now + LOW_POWER_MOTION_REPULSE_SECONDS))
+                        echo "[$(date +%Y-%m-%dT%H:%M:%S)] motion-on $line" >> "$out"
+                    fi
+                    motion_until=$((now + LOW_POWER_MOTION_HOLD_SECONDS))
+                done < "$src"
+                if [ "$n" -lt "$seen" ]; then
+                    seen=0
+                else
+                    seen="$n"
+                fi
+            fi
+            sleep 1
+        done
+    ) &
+    log "started PIR log motion watcher pid=$!"
+}
+
+start_stone_main() {
+    if [ ! -x "$PATCHER" ]; then
+        log "missing patcher: $PATCHER"
+    fi
+    prepare_stone_main || log "could not prepare current stock Tuya executable"
+
+    if [ -x "$STONE_RUN" ]; then
+        "$STONE_RUN" >> "$LOGDIR/stone-main.log" 2>&1 &
+        log "started Tuya stone main path=$STONE_RUN pid=$!"
+    else
+        log "missing executable STONE_RUN=$STONE_RUN"
+        echo missing-stone-main > /dev/console
+    fi
+}
+
+configure_tuya_motion
+start_telnetd
+start_stone_main
+sleep 2
+start_stream_relay
+start_onvif
+start_pir_motion_watcher
+start_aic_forward
+start_log_pruner
+
+wait
